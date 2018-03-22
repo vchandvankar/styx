@@ -29,7 +29,6 @@ import static com.spotify.styx.util.ShardedCounter.PROPERTY_LIMIT;
 import static com.spotify.styx.util.ShardedCounter.PROPERTY_SHARD_INDEX;
 import static com.spotify.styx.util.ShardedCounter.PROPERTY_SHARD_VALUE;
 import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toMap;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -50,10 +49,8 @@ import com.google.cloud.datastore.StructuredQuery.Filter;
 import com.google.cloud.datastore.StructuredQuery.PropertyFilter;
 import com.google.cloud.datastore.Transaction;
 import com.google.cloud.datastore.Value;
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -67,8 +64,9 @@ import com.spotify.styx.model.Workflow;
 import com.spotify.styx.model.WorkflowId;
 import com.spotify.styx.model.WorkflowInstance;
 import com.spotify.styx.model.WorkflowState;
+import com.spotify.styx.serialization.PersistentWorkflowInstanceState;
+import com.spotify.styx.serialization.PersistentWorkflowInstanceStateBuilder;
 import com.spotify.styx.state.Message;
-import com.spotify.styx.state.RunState;
 import com.spotify.styx.state.RunState.State;
 import com.spotify.styx.state.StateData;
 import com.spotify.styx.util.FnWithException;
@@ -79,37 +77,31 @@ import com.spotify.styx.util.TriggerUtil;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ForkJoinPool;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * A backend for {@link AggregateStorage} backed by Google Datastore
  */
-public class DatastoreStorage {
+public class DatastoreInconsistentStorage {
 
-  private static final Logger LOG = LoggerFactory.getLogger(DatastoreStorage.class);
+  private static final Logger LOG = LoggerFactory.getLogger(DatastoreInconsistentStorage.class);
 
   public static final String KIND_STYX_CONFIG = "StyxConfig";
   public static final String KIND_COMPONENT = "Component";
   public static final String KIND_WORKFLOW = "Workflow";
-  public static final String KIND_WORKFLOW_LIST = "WorkflowList";
   public static final String KIND_ACTIVE_WORKFLOW_INSTANCE = "ActiveWorkflowInstance";
-  public static final String KIND_ACTIVE_WORKFLOW_INSTANCE_LIST = "ActiveWorkflowInstanceList";
   public static final String KIND_RESOURCE = "Resource";
   public static final String KIND_BACKFILL = "Backfill";
 
@@ -118,11 +110,7 @@ public class DatastoreStorage {
   public static final String PROPERTY_CONFIG_CONCURRENCY = "concurrency";
   public static final String PROPERTY_CONFIG_CLIENT_BLACKLIST = "clientBlacklist";
   public static final String PROPERTY_CONFIG_EXECUTION_GATING_ENABLED = "executionGatingEnabled";
-  public static final String PROPERTY_CONFIG_DEBUG_ENABLED = "debug";
-  public static final String PROPERTY_CONFIG_RESOURCES_SYNC_ENABLED = "resourcesSyncEnabled";
 
-  public static final String PROPERTY_WORKFLOW_IDS = "workflowIds";
-  public static final String PROPERTY_ACTIVE_WORKFLOW_INSTANCE_IDS = "awfiIds";
   public static final String PROPERTY_WORKFLOW_JSON = "json";
   public static final String PROPERTY_WORKFLOW_ENABLED = "enabled";
   public static final String PROPERTY_NEXT_NATURAL_TRIGGER = "nextNaturalTrigger";
@@ -139,6 +127,7 @@ public class DatastoreStorage {
   public static final String PROPERTY_ALL_TRIGGERED = "allTriggered";
   public static final String PROPERTY_HALTED = "halted";
   public static final String PROPERTY_DESCRIPTION = "description";
+  public static final String PROPERTY_CONFIG_DEBUG_ENABLED = "debug";
   public static final String PROPERTY_SUBMISSION_RATE_LIMIT = "submissionRateLimit";
 
   public static final String PROPERTY_STATE = "state";
@@ -162,29 +151,22 @@ public class DatastoreStorage {
   public static final boolean DEFAULT_WORKFLOW_ENABLED = false;
   public static final boolean DEFAULT_CONFIG_DEBUG_ENABLED = false;
   public static final boolean DEFAULT_CONFIG_EXECUTION_GATING_ENABLED = false;
-  public static final boolean DEFAULT_CONFIG_RESOURCES_SYNC_ENABLED = false;
 
   public static final int MAX_RETRIES = 100;
-  public static final int MAX_NUMBER_OF_ENTITIES_IN_ONE_BATCH = 1000;
-
-  private static final int REQUEST_CONCURRENCY = 32;
 
   private final Datastore datastore;
   private final Duration retryBaseDelay;
   private final Function<Transaction, DatastoreStorageTransaction> storageTransactionFactory;
-  private final ForkJoinPool forkJoinPool;
 
-  DatastoreStorage(Datastore datastore, Duration retryBaseDelay) {
+  DatastoreInconsistentStorage(Datastore datastore, Duration retryBaseDelay) {
     this(datastore, retryBaseDelay, DatastoreStorageTransaction::new);
   }
 
-  @VisibleForTesting
-  DatastoreStorage(Datastore datastore, Duration retryBaseDelay,
-                   Function<Transaction, DatastoreStorageTransaction> storageTransactionFactory) {
+  DatastoreInconsistentStorage(Datastore datastore, Duration retryBaseDelay,
+      Function<Transaction, DatastoreStorageTransaction> storageTransactionFactory) {
     this.datastore = Objects.requireNonNull(datastore);
     this.retryBaseDelay = Objects.requireNonNull(retryBaseDelay);
     this.storageTransactionFactory = Objects.requireNonNull(storageTransactionFactory);
-    this.forkJoinPool = new ForkJoinPool(REQUEST_CONCURRENCY);
   }
 
   StyxConfig config() {
@@ -200,8 +182,6 @@ public class DatastoreStorage {
         .globalConcurrency(readOpt(entity, PROPERTY_CONFIG_CONCURRENCY))
         .globalEnabled(read(entity, PROPERTY_CONFIG_ENABLED, DEFAULT_CONFIG_ENABLED))
         .debugEnabled(read(entity, PROPERTY_CONFIG_DEBUG_ENABLED, DEFAULT_CONFIG_DEBUG_ENABLED))
-        .resourcesSyncEnabled(read(entity, PROPERTY_CONFIG_RESOURCES_SYNC_ENABLED,
-            DEFAULT_CONFIG_RESOURCES_SYNC_ENABLED))
         .submissionRateLimit(readOpt(entity, PROPERTY_SUBMISSION_RATE_LIMIT))
         .globalDockerRunnerId(
             read(entity, PROPERTY_CONFIG_DOCKER_RUNNER_ID, DEFAULT_CONFIG_DOCKER_RUNNER_ID))
@@ -325,34 +305,6 @@ public class DatastoreStorage {
     return map;
   }
 
-  public Map<WorkflowId, Workflow> workflows(Set<WorkflowId> workflowIds) {
-    final Iterable<List<WorkflowId>> batches = Iterables.partition(workflowIds, MAX_NUMBER_OF_ENTITIES_IN_ONE_BATCH);
-    return StreamSupport.stream(batches.spliterator(), false)
-        .map(batch -> forkJoinPool.submit(() -> this.getBatchOfWorkflows(batch)))
-        // `collect and stream` is crucial to make tasks running in parallel, otherwise they will
-        // be processed sequentially. Without `collect`, it will try to submit and wait for each task
-        // while iterating through the stream. This is somewhat subtle, so think twice.
-        .collect(toList())
-        .stream()
-        .flatMap(task -> task.join().stream())
-        .collect(toMap(Workflow::id, Function.identity()));
-  }
-
-  private List<Workflow> getBatchOfWorkflows(final List<WorkflowId> batch) {
-    final List<Key> keys = batch.stream()
-        .map(workflowId -> workflowKey(datastore.newKeyFactory(), workflowId))
-        .collect(toList());
-    final List<Workflow> workflows = new ArrayList<>();
-    datastore.get(keys).forEachRemaining(entity -> {
-      try {
-        workflows.add(OBJECT_MAPPER.readValue(entity.getString(PROPERTY_WORKFLOW_JSON), Workflow.class));
-      } catch (IOException e) {
-        LOG.warn("Failed to read workflow {}.", entity.getKey());
-      }
-    });
-    return workflows;
-  }
-
   public List<Workflow> workflows(String componentId) throws IOException {
     final Key componentKey = componentKey(datastore.newKeyFactory(), componentId);
 
@@ -380,51 +332,14 @@ public class DatastoreStorage {
     return workflows;
   }
 
-  /**
-   * Eventually consistently list all active states and strongly consistently fetch their values.
-   *
-   * <p>This method will return a map of active states that might be missing some recently created
-   * states, but the values of all the states returned should be fresh.
-   */
-  Map<WorkflowInstance, RunState> readActiveStates() throws IOException {
-    // Eventually consistently read active state keys
-    final List<Key> keys = readActiveInstanceKeys();
+  Map<WorkflowInstance, PersistentWorkflowInstanceState> allActiveStates() throws IOException {
+    final EntityQuery query =
+        Query.newEntityQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE).build();
 
-    // Strongly consistently read values for the above keys
-    return Lists.partition(keys, MAX_NUMBER_OF_ENTITIES_IN_ONE_BATCH).stream()
-        .map(batch -> forkJoinPool.submit(() -> this.readRunStateBatch(batch)))
-        .collect(toList()).stream() // collect here to execute batch reads in parallel
-        .flatMap(task -> task.join().stream())
-        .collect(toMap(RunState::workflowInstance, Function.identity()));
+    return queryActiveStates(query);
   }
 
-  /**
-   * Eventually consistently query for the keys of all active workflow instances.
-   */
-  private List<Key> readActiveInstanceKeys() {
-    final List<Key> keys = new ArrayList<>();
-    final QueryResults<Key> keyResults = datastore
-        .run(Query.newKeyQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE).build());
-    keyResults.forEachRemaining(keys::add);
-    return keys;
-  }
-
-  /**
-   * Strongly consistently read a batch of {@link RunState}s.
-   */
-  private List<RunState> readRunStateBatch(List<Key> keys) throws IOException {
-    assert keys.size() <= MAX_NUMBER_OF_ENTITIES_IN_ONE_BATCH;
-    final List<RunState> runStates = new ArrayList<>();
-    final Iterator<Entity> entities = datastore.get(keys);
-    while (entities.hasNext()) {
-      final Entity entity = entities.next();
-      final RunState runState = entityToRunState(entity, parseWorkflowInstance(entity));
-      runStates.add(runState);
-    }
-    return runStates;
-  }
-
-  Map<WorkflowInstance, RunState> readActiveStates(String componentId) throws IOException {
+  Map<WorkflowInstance, PersistentWorkflowInstanceState> activeStates(String componentId) throws IOException {
     final EntityQuery query =
         Query.newEntityQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE)
             .setFilter(PropertyFilter.eq(PROPERTY_COMPONENT, componentId))
@@ -433,7 +348,7 @@ public class DatastoreStorage {
     return queryActiveStates(query);
   }
 
-  public Map<WorkflowInstance, RunState> activeStatesByTriggerId(
+  public Map<WorkflowInstance, PersistentWorkflowInstanceState> activeStatesByTriggerId(
       String triggerId) throws IOException {
     final EntityQuery query =
         Query.newEntityQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE)
@@ -443,131 +358,107 @@ public class DatastoreStorage {
     return queryActiveStates(query);
   }
 
-  /**
-   * Brute force, slow, but consistent version...
-   *
-   * TODO rate limit (cache the entire list)
-   */
-  private Map<WorkflowInstance, RunState> queryAllActiveStates() throws
-      IOException {
-    final ImmutableMap.Builder<WorkflowInstance, RunState> mapBuilder = ImmutableMap
-        .builder();
-
-    final Entity wfListEntity = datastore.get(
-        wfListKey(datastore.newKeyFactory()));
-
-    if (wfListEntity != null) {
-      List<Value<String>> wfList = wfListEntity.getList(PROPERTY_WORKFLOW_IDS);
-
-      // this loop should better be parallelized I guess
-      for (Value<String> wfId : wfList) {
-        final Entity awfiListEntity = datastore.get(
-            awfiListKey(datastore.newKeyFactory(), wfId.get()));
-
-        if (awfiListEntity != null) {
-          List<Value<String>> awfiList = awfiListEntity.getList
-              (PROPERTY_ACTIVE_WORKFLOW_INSTANCE_IDS);
-
-          for (Value<String> awfiId : awfiList) {
-            WorkflowInstance instance = WorkflowInstance.parseKey(awfiId.get());
-            Optional<RunState> state = readActiveState(instance);
-
-            if (state.isPresent()) {
-              mapBuilder.put(instance, state.get());
-            }
-          }
-        }
-      }
-    }
-
-    return mapBuilder.build();
-  }
-
-  private Map<WorkflowInstance, RunState> queryActiveStatesInconsistent(EntityQuery
-      activeStatesQuery)
+  private Map<WorkflowInstance, PersistentWorkflowInstanceState> queryActiveStates(EntityQuery activeStatesQuery)
       throws IOException {
-    final ImmutableMap.Builder<WorkflowInstance, RunState> mapBuilder = ImmutableMap.builder();
+    final ImmutableMap.Builder<WorkflowInstance, PersistentWorkflowInstanceState> mapBuilder = ImmutableMap.builder();
     final QueryResults<Entity> results = datastore.run(activeStatesQuery);
 
     while (results.hasNext()) {
       final Entity entity = results.next();
       final WorkflowInstance instance = parseWorkflowInstance(entity);
-      mapBuilder.put(instance, entityToRunState(entity, instance));
+      mapBuilder.put(instance, readPersistentWorkflowInstanceState(entity));
     }
 
     return mapBuilder.build();
   }
 
-  Optional<RunState> readActiveState(WorkflowInstance instance) throws IOException {
+  Optional<PersistentWorkflowInstanceState> activeState(WorkflowInstance instance) throws IOException {
     final Entity entity = datastore.get(activeWorkflowInstanceKey(instance));
     if (entity == null) {
       return Optional.empty();
     } else {
-      return Optional.of(entityToRunState(entity, instance));
+      return Optional.of(readPersistentWorkflowInstanceState(entity));
     }
   }
 
-  static RunState entityToRunState(Entity entity, WorkflowInstance instance)
+  static PersistentWorkflowInstanceState readPersistentWorkflowInstanceState(Entity entity)
       throws IOException {
     final long counter = entity.getLong(PROPERTY_COUNTER);
-    final State state = State.valueOf(entity.getString(PROPERTY_STATE));
-    final long timestamp = entity.getLong(PROPERTY_STATE_TIMESTAMP);
-    final StateData data = StateData.newBuilder()
-        .tries((int) entity.getLong(PROPERTY_STATE_TRIES))
-        .consecutiveFailures((int) entity.getLong(PROPERTY_STATE_CONSECUTIVE_FAILURES))
-        .retryCost(entity.getDouble(PROPERTY_STATE_RETRY_COST))
-        .trigger(DatastoreStorage.<String>readOpt(entity, PROPERTY_STATE_TRIGGER_TYPE).map(type ->
-            TriggerUtil.trigger(type, entity.getString(PROPERTY_STATE_TRIGGER_ID))))
-        .messages(OBJECT_MAPPER.<List<Message>>readValue(entity.getString(PROPERTY_STATE_MESSAGES),
-            new TypeReference<List<Message>>() { }))
-        .retryDelayMillis(readOpt(entity, PROPERTY_STATE_RETRY_DELAY_MILLIS))
-        .lastExit(DatastoreStorage.<Long>readOpt(entity, PROPERTY_STATE_LAST_EXIT).map(Long::intValue))
-        .executionId(readOpt(entity, PROPERTY_STATE_EXECUTION_ID))
-        .executionDescription(readOptJson(entity, PROPERTY_STATE_EXECUTION_DESCRIPTION,
-            ExecutionDescription.class))
-        .resourceIds(readOptJson(entity, PROPERTY_STATE_RESOURCE_IDS,
-            new TypeReference<Set<String>>() { }))
-        .build();
-    return RunState.create(instance, state, data, Instant.ofEpochMilli(timestamp), counter);
+    final PersistentWorkflowInstanceStateBuilder persistentState =
+        PersistentWorkflowInstanceState.builder()
+            .counter(counter);
+
+    // TODO: always read these state fields when all active state entities have been migrated
+    if (entity.contains(PROPERTY_STATE)) {
+      final State state = State.valueOf(entity.getString(PROPERTY_STATE));
+      final long timestamp = entity.getLong(PROPERTY_STATE_TIMESTAMP);
+
+      final StateData data = StateData.newBuilder()
+          .tries((int) entity.getLong(PROPERTY_STATE_TRIES))
+          .consecutiveFailures((int) entity.getLong(PROPERTY_STATE_CONSECUTIVE_FAILURES))
+          .retryCost(entity.getDouble(PROPERTY_STATE_RETRY_COST))
+          .trigger(DatastoreInconsistentStorage.<String>readOpt(entity, PROPERTY_STATE_TRIGGER_TYPE).map(type ->
+              TriggerUtil.trigger(type, entity.getString(PROPERTY_STATE_TRIGGER_ID))))
+          .messages(OBJECT_MAPPER.<List<Message>>readValue(entity.getString(PROPERTY_STATE_MESSAGES),
+              new TypeReference<List<Message>>() { }))
+          .retryDelayMillis(readOpt(entity, PROPERTY_STATE_RETRY_DELAY_MILLIS))
+          .lastExit(DatastoreInconsistentStorage.<Long>readOpt(entity, PROPERTY_STATE_LAST_EXIT).map(Long::intValue))
+          .executionId(readOpt(entity, PROPERTY_STATE_EXECUTION_ID))
+          .executionDescription(readOptJson(entity, PROPERTY_STATE_EXECUTION_DESCRIPTION,
+              ExecutionDescription.class))
+          .resourceIds(readOptJson(entity, PROPERTY_STATE_RESOURCE_IDS,
+              new TypeReference<Set<String>>() { }))
+          .build();
+
+      persistentState
+          .state(state)
+          .data(data)
+          .timestamp(Instant.ofEpochMilli(timestamp));
+    }
+
+    return persistentState.build();
   }
 
-  void writeActiveState(WorkflowInstance workflowInstance, RunState state)
+  void writeActiveState(WorkflowInstance workflowInstance, PersistentWorkflowInstanceState state)
       throws IOException {
-    storeWithRetries(() -> datastore.put(
-        runStateToEntity(datastore.newKeyFactory(), workflowInstance, state)));
+    storeWithRetries(() -> datastore.put(activeStateToEntity(datastore.newKeyFactory(), workflowInstance, state)));
   }
 
-  static Entity runStateToEntity(KeyFactory keyFactory, WorkflowInstance wfi, RunState state)
+  static Entity activeStateToEntity(KeyFactory keyFactory, WorkflowInstance workflowInstance,
+      PersistentWorkflowInstanceState state)
       throws JsonProcessingException {
-    final Key key = activeWorkflowInstanceKey(keyFactory, wfi);
+    final Key key = activeWorkflowInstanceKey(keyFactory, workflowInstance);
     final Entity.Builder entity = Entity.newBuilder(key)
-        .set(PROPERTY_COMPONENT, wfi.workflowId().componentId())
-        .set(PROPERTY_WORKFLOW, wfi.workflowId().id())
-        .set(PROPERTY_PARAMETER, wfi.parameter())
+        .set(PROPERTY_COMPONENT, workflowInstance.workflowId().componentId())
+        .set(PROPERTY_WORKFLOW, workflowInstance.workflowId().id())
+        .set(PROPERTY_PARAMETER, workflowInstance.parameter())
         .set(PROPERTY_COUNTER, state.counter());
 
-    entity
-        .set(PROPERTY_STATE, state.state().toString())
-        .set(PROPERTY_STATE_TIMESTAMP, state.timestamp())
-        .set(PROPERTY_STATE_TRIES, state.data().tries())
-        .set(PROPERTY_STATE_CONSECUTIVE_FAILURES, state.data().consecutiveFailures())
-        .set(PROPERTY_STATE_RETRY_COST, state.data().retryCost())
-        // TODO: consider making this list bounded or not storing it here to avoid exceeding entity size limit
-        .set(PROPERTY_STATE_MESSAGES, jsonValue(state.data().messages()));
+    // TODO: always write these fields when event-only replay tests have been removed
+    if (state.state() != null) {
+      entity
+          .set(PROPERTY_STATE, state.state().toString())
+          .set(PROPERTY_STATE_TIMESTAMP, state.timestamp().toEpochMilli())
+          .set(PROPERTY_STATE_TRIES, state.data().tries())
+          .set(PROPERTY_STATE_CONSECUTIVE_FAILURES, state.data().consecutiveFailures())
+          .set(PROPERTY_STATE_RETRY_COST, state.data().retryCost())
+          // TODO: consider making this list bounded or not storing it here to avoid exceeding entity size limit
+          .set(PROPERTY_STATE_MESSAGES, jsonValue(state.data().messages()));
 
-    state.data().retryDelayMillis().ifPresent(v -> entity.set(PROPERTY_STATE_RETRY_DELAY_MILLIS, v));
-    state.data().lastExit().ifPresent(v -> entity.set(PROPERTY_STATE_LAST_EXIT, v));
-    state.data().trigger().ifPresent(trigger -> {
-      entity.set(PROPERTY_STATE_TRIGGER_TYPE, TriggerUtil.triggerType(trigger));
-      entity.set(PROPERTY_STATE_TRIGGER_ID, TriggerUtil.triggerId(trigger));
-    });
-    state.data().executionId().ifPresent(v -> entity.set(PROPERTY_STATE_EXECUTION_ID, v));
+      state.data().retryDelayMillis().ifPresent(v -> entity.set(PROPERTY_STATE_RETRY_DELAY_MILLIS, v));
+      state.data().lastExit().ifPresent(v -> entity.set(PROPERTY_STATE_LAST_EXIT, v));
+      state.data().trigger().ifPresent(trigger -> {
+        entity.set(PROPERTY_STATE_TRIGGER_TYPE, TriggerUtil.triggerType(trigger));
+        entity.set(PROPERTY_STATE_TRIGGER_ID, TriggerUtil.triggerId(trigger));
+      });
+      state.data().executionId().ifPresent(v -> entity.set(PROPERTY_STATE_EXECUTION_ID, v));
 
-    if (state.data().executionDescription().isPresent()) {
-      entity.set(PROPERTY_STATE_EXECUTION_DESCRIPTION, jsonValue(state.data().executionDescription().get()));
-    }
-    if (state.data().resourceIds().isPresent()) {
-      entity.set(PROPERTY_STATE_RESOURCE_IDS, jsonValue(state.data().resourceIds().get()));
+      if (state.data().executionDescription().isPresent()) {
+        entity.set(PROPERTY_STATE_EXECUTION_DESCRIPTION, jsonValue(state.data().executionDescription().get()));
+      }
+      if (state.data().resourceIds().isPresent()) {
+        entity.set(PROPERTY_STATE_RESOURCE_IDS, jsonValue(state.data().resourceIds().get()));
+      }
     }
 
     return entity.build();
@@ -637,18 +528,6 @@ public class DatastoreStorage {
     return keyFactory
         .setKind(KIND_ACTIVE_WORKFLOW_INSTANCE)
         .newKey(workflowInstance.toKey());
-  }
-
-  static Key wfListKey(KeyFactory keyFactory) {
-    return keyFactory
-        .setKind(KIND_WORKFLOW_LIST)
-        .newKey("the-list");
-  }
-
-  static Key awfiListKey(KeyFactory keyFactory, String workflowId) {
-    return keyFactory
-        .setKind(KIND_ACTIVE_WORKFLOW_INSTANCE_LIST)
-        .newKey(workflowId);
   }
 
   private WorkflowInstance parseWorkflowInstance(Entity activeWorkflowInstance) {
@@ -932,12 +811,12 @@ public class DatastoreStorage {
   }
 
   Map<Integer,Long> shardsForCounter(String counterId) {
-    final List<Key> shardKeys = IntStream.range(0, NUM_SHARDS).mapToObj(
-        index -> datastore.newKeyFactory().setKind(KIND_COUNTER_SHARD).newKey(
-            String.format("%s-%d", counterId, index)))
-        .collect(toList());
-
-    final Iterator<Entity> shards = datastore.get(shardKeys);
+    final EntityQuery queryShards = EntityQuery.newEntityQueryBuilder()
+        .setKind(KIND_COUNTER_SHARD)
+        .setFilter(PropertyFilter.eq(PROPERTY_COUNTER_ID, counterId))
+        .setLimit(NUM_SHARDS)
+        .build();
+    final QueryResults<Entity> shards = datastore.run(queryShards);
     final Map<Integer, Long> fetchedShards = new HashMap<>();
     while (shards.hasNext()) {
       Entity shard = shards.next();
@@ -981,13 +860,6 @@ public class DatastoreStorage {
   void deleteLimitForCounter(String counterId) throws IOException {
     storeWithRetries(() -> runInTransaction(tx -> {
       tx.deleteCounterLimit(counterId);
-      return null;
-    }));
-  }
-
-  void updateLimitForCounter(String counterId, long limit) throws IOException {
-    storeWithRetries(() -> runInTransaction(tx -> {
-      tx.updateLimitForCounter(counterId, limit);
       return null;
     }));
   }
