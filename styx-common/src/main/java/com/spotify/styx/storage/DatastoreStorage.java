@@ -72,6 +72,7 @@ import com.spotify.styx.state.RunState;
 import com.spotify.styx.state.RunState.State;
 import com.spotify.styx.state.StateData;
 import com.spotify.styx.util.FnWithException;
+import com.spotify.styx.util.MapUtil;
 import com.spotify.styx.util.ResourceNotFoundException;
 import com.spotify.styx.util.TimeUtil;
 import com.spotify.styx.util.TriggerInstantSpec;
@@ -222,6 +223,8 @@ public class DatastoreStorage {
   }
 
   Set<WorkflowId> enabled() throws IOException {
+    // doing
+
     final EntityQuery queryWorkflows = EntityQuery.newEntityQueryBuilder().setKind(KIND_WORKFLOW).build();
     final QueryResults<Entity> result = datastore.run(queryWorkflows);
 
@@ -232,6 +235,27 @@ public class DatastoreStorage {
       final boolean enabled =
           workflow.contains(PROPERTY_WORKFLOW_ENABLED)
           && workflow.getBoolean(PROPERTY_WORKFLOW_ENABLED);
+
+      if (enabled) {
+        enabledWorkflows.add(parseWorkflowId(workflow));
+      }
+    }
+
+    return enabledWorkflows;
+  }
+
+  Set<WorkflowId> enabledInconsistent() throws IOException {
+    // FIXME eventually consistent query
+    final EntityQuery queryWorkflows = EntityQuery.newEntityQueryBuilder().setKind(KIND_WORKFLOW).build();
+    final QueryResults<Entity> result = datastore.run(queryWorkflows);
+
+    final Set<WorkflowId> enabledWorkflows = Sets.newHashSet();
+
+    while (result.hasNext()) {
+      final Entity workflow = result.next();
+      final boolean enabled =
+          workflow.contains(PROPERTY_WORKFLOW_ENABLED)
+              && workflow.getBoolean(PROPERTY_WORKFLOW_ENABLED);
 
       if (enabled) {
         enabledWorkflows.add(parseWorkflowId(workflow));
@@ -269,6 +293,7 @@ public class DatastoreStorage {
 
   public Map<Workflow, TriggerInstantSpec> workflowsWithNextNaturalTrigger() throws IOException {
     final Map<Workflow, TriggerInstantSpec> map = Maps.newHashMap();
+    // FIXME eventually consistent query
     final EntityQuery query =
         Query.newEntityQueryBuilder().setKind(KIND_WORKFLOW).build();
     final QueryResults<Entity> result = datastore.run(query);
@@ -305,8 +330,45 @@ public class DatastoreStorage {
     return map;
   }
 
-  public Map<WorkflowId, Workflow> workflows() {
+  /**
+   * Brute force, slow, but more consistent version...
+   *
+   * TODO rate limit (cache the entire list)?
+   */
+  public Map<WorkflowId, Workflow> queryAllWorkflows() {
+    final ImmutableMap.Builder<WorkflowId, Workflow> mapBuilder = ImmutableMap.builder();
+
+    final Entity wfListEntity = datastore.get(
+        wfListKey(datastore.newKeyFactory()));
+
+    if (wfListEntity != null) {
+      List<Value<String>> wfList = wfListEntity.getList(PROPERTY_WORKFLOW_IDS);
+
+      // this loop should better be parallelized I guess
+      for (Value<String> wfId : wfList) {
+        WorkflowId id = WorkflowId.parseKey(wfId.get());
+        final Optional<Entity> workflowEntity = getOpt(datastore, workflowKey(datastore
+            .newKeyFactory(), id));
+
+        if (workflowEntity.isPresent()) {
+          try {
+            mapBuilder.put(id, parseWorkflowJson(workflowEntity.get(), id));
+          } catch (IOException e) {
+            LOG.warn("Failed to read workflow {}", workflowEntity.get().getKey());
+            // TODO not swallow exception?
+            // We're unfortunately far away from consistently creating and deleting workflows, so
+            // lacking a workflow entity while having its id in the list is unfortunately expected.
+          }
+        }
+      }
+    }
+
+    return mapBuilder.build();
+  }
+
+  public Map<WorkflowId, Workflow> workflowsInconsistent() {
     final Map<WorkflowId, Workflow> map = Maps.newHashMap();
+    // FIXME eventually consistent query
     final EntityQuery query = Query.newEntityQueryBuilder().setKind(KIND_WORKFLOW).build();
     final QueryResults<Entity> result = datastore.run(query);
 
@@ -385,6 +447,8 @@ public class DatastoreStorage {
    *
    * <p>This method will return a map of active states that might be missing some recently created
    * states, but the values of all the states returned should be fresh.
+   *
+   * TODO rate limit (cache the entire map)?
    */
   Map<WorkflowInstance, RunState> readActiveStates() throws IOException {
     // Eventually consistently read active state keys
@@ -399,13 +463,18 @@ public class DatastoreStorage {
   }
 
   /**
-   * Eventually consistently query for the keys of all active workflow instances.
+   * List the keys of all active workflow instances, with enhanced consistency using the
+   * transactionally updated index.
+   *
+   * Guaranteed to be up to date with all prior writes and deletions, but may or may not also
+   * include effects of concurrent writes and deletions as they happen.
    */
   private List<Key> readActiveInstanceKeys() {
     final List<Key> keys = new ArrayList<>();
-    final QueryResults<Key> keyResults = datastore
-        .run(Query.newKeyQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE).build());
-    keyResults.forEachRemaining(keys::add);
+//    final QueryResults<Key> keyResults = datastore
+//        .run(Query.newKeyQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE).build());
+//    keyResults.forEachRemaining(keys::add);
+    // TODO read index shards
     return keys;
   }
 
@@ -425,77 +494,24 @@ public class DatastoreStorage {
   }
 
   Map<WorkflowInstance, RunState> readActiveStates(String componentId) throws IOException {
-    final EntityQuery query =
-        Query.newEntityQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE)
-            .setFilter(PropertyFilter.eq(PROPERTY_COMPONENT, componentId))
-            .build();
+//    final EntityQuery query =
+//        Query.newEntityQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE)
+//            .setFilter(PropertyFilter.eq(PROPERTY_COMPONENT, componentId))
+//            .build();
 
-    return queryActiveStates(query);
+    return MapUtil.filterByKey(readActiveStates(),
+        instance -> componentId.equals(instance.workflowId().componentId()));
   }
 
   public Map<WorkflowInstance, RunState> activeStatesByTriggerId(
       String triggerId) throws IOException {
-    final EntityQuery query =
-        Query.newEntityQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE)
-            .setFilter(PropertyFilter.eq(PROPERTY_STATE_TRIGGER_ID, triggerId))
-            .build();
+//    final EntityQuery query =
+//        Query.newEntityQueryBuilder().setKind(KIND_ACTIVE_WORKFLOW_INSTANCE)
+//            .setFilter(PropertyFilter.eq(PROPERTY_STATE_TRIGGER_ID, triggerId))
+//            .build();
 
-    return queryActiveStates(query);
-  }
-
-  /**
-   * Brute force, slow, but consistent version...
-   *
-   * TODO rate limit (cache the entire list)
-   */
-  private Map<WorkflowInstance, RunState> queryAllActiveStates() throws
-      IOException {
-    final ImmutableMap.Builder<WorkflowInstance, RunState> mapBuilder = ImmutableMap
-        .builder();
-
-    final Entity wfListEntity = datastore.get(
-        wfListKey(datastore.newKeyFactory()));
-
-    if (wfListEntity != null) {
-      List<Value<String>> wfList = wfListEntity.getList(PROPERTY_WORKFLOW_IDS);
-
-      // this loop should better be parallelized I guess
-      for (Value<String> wfId : wfList) {
-        final Entity awfiListEntity = datastore.get(
-            awfiListKey(datastore.newKeyFactory(), wfId.get()));
-
-        if (awfiListEntity != null) {
-          List<Value<String>> awfiList = awfiListEntity.getList
-              (PROPERTY_ACTIVE_WORKFLOW_INSTANCE_IDS);
-
-          for (Value<String> awfiId : awfiList) {
-            WorkflowInstance instance = WorkflowInstance.parseKey(awfiId.get());
-            Optional<RunState> state = readActiveState(instance);
-
-            if (state.isPresent()) {
-              mapBuilder.put(instance, state.get());
-            }
-          }
-        }
-      }
-    }
-
-    return mapBuilder.build();
-  }
-
-  private Map<WorkflowInstance, RunState> queryActiveStatesInconsistent(EntityQuery
-      activeStatesQuery)
-      throws IOException {
-    final ImmutableMap.Builder<WorkflowInstance, RunState> mapBuilder = ImmutableMap.builder();
-    final QueryResults<Entity> results = datastore.run(activeStatesQuery);
-
-    while (results.hasNext()) {
-      final Entity entity = results.next();
-      final WorkflowInstance instance = parseWorkflowInstance(entity);
-      mapBuilder.put(instance, entityToRunState(entity, instance));
-    }
-
-    return mapBuilder.build();
+    return MapUtil.filterByValue(readActiveStates(),
+        runState -> triggerId.equals(runState.data().triggerId()));
   }
 
   Optional<RunState> readActiveState(WorkflowInstance instance) throws IOException {
@@ -758,6 +774,7 @@ public class DatastoreStorage {
   }
 
   List<Resource> getResources() {
+    // FIXME eventually consistent query
     final EntityQuery query = Query.newEntityQueryBuilder().setKind(KIND_RESOURCE).build();
     final QueryResults<Entity> results = datastore.run(query);
     final List<Resource> resources = Lists.newArrayList();
@@ -788,6 +805,7 @@ public class DatastoreStorage {
   }
 
   private EntityQuery.Builder backfillQueryBuilder(boolean showAll, Filter... filters) {
+    // FIXME eventually consistent query
     final EntityQuery.Builder queryBuilder = Query.newEntityQueryBuilder().setKind(KIND_BACKFILL);
 
     final List<Filter> andedFilters = Lists.newArrayList(filters);
@@ -959,6 +977,7 @@ public class DatastoreStorage {
   }
 
   void deleteShardsForCounter(String counterId) {
+    // FIXME eventually consistent query
     QueryResults<Entity> results = datastore.run(EntityQuery.newEntityQueryBuilder()
                                                      .setKind(KIND_COUNTER_SHARD)
                                                      .setFilter(PropertyFilter
