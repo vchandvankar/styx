@@ -54,6 +54,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -222,26 +223,36 @@ public class DatastoreStorage {
         .orElse(DEFAULT_WORKFLOW_ENABLED);
   }
 
-  Set<WorkflowId> enabled() throws IOException {
-    // doing
+  /**
+   * Brute force, slow, but consistent version...
+   *
+   * TODO rate limit (cache the entire list)?
+   */
+  Set<WorkflowId> queryAllEnabledWorkflowIds() throws IOException {
+    final ImmutableSet.Builder<WorkflowId> setBuilder = ImmutableSet.builder();
 
-    final EntityQuery queryWorkflows = EntityQuery.newEntityQueryBuilder().setKind(KIND_WORKFLOW).build();
-    final QueryResults<Entity> result = datastore.run(queryWorkflows);
+    final Entity wfListEntity = datastore.get(
+        wfListKey(datastore.newKeyFactory()));
 
-    final Set<WorkflowId> enabledWorkflows = Sets.newHashSet();
+    if (wfListEntity != null) {
+      List<Value<String>> wfList = wfListEntity.getList(PROPERTY_WORKFLOW_IDS);
 
-    while (result.hasNext()) {
-      final Entity workflow = result.next();
-      final boolean enabled =
-          workflow.contains(PROPERTY_WORKFLOW_ENABLED)
-          && workflow.getBoolean(PROPERTY_WORKFLOW_ENABLED);
+      // this loop should better be parallelized I guess
+      for (Value<String> wfId : wfList) {
+        WorkflowId id = WorkflowId.parseKey(wfId.get());
+        final Optional<Entity> workflowEntity = getOpt(datastore, workflowKey(datastore
+            .newKeyFactory(), id));
 
-      if (enabled) {
-        enabledWorkflows.add(parseWorkflowId(workflow));
+        if (workflowEntity.isPresent()) {
+          if (workflowEntity.get().contains(PROPERTY_WORKFLOW_ENABLED) &&
+              workflowEntity.get().getBoolean(PROPERTY_WORKFLOW_ENABLED)) {
+            setBuilder.add(id);
+          }
+        }
       }
     }
 
-    return enabledWorkflows;
+    return setBuilder.build();
   }
 
   Set<WorkflowId> enabledInconsistent() throws IOException {
