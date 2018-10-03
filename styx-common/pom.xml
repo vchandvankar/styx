@@ -41,6 +41,15 @@
       <artifactId>auto-matter</artifactId>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>com.ryanharter.auto.value</groupId>
+      <artifactId>auto-value-gson</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.ryanharter.auto.value</groupId>
+      <artifactId>auto-value-gson-annotations</artifactId>
+    </dependency>
 
     <dependency>
       <groupId>com.github.sviperll</groupId>

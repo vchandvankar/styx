@@ -21,10 +21,11 @@
 package com.spotify.styx.client;
 
 import static com.spotify.styx.client.FutureOkHttpClient.forUri;
+import static com.spotify.styx.client.Json.GSON;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.spotify.styx.api.Api;
 import com.spotify.styx.api.BackfillPayload;
 import com.spotify.styx.api.BackfillsPayload;
@@ -47,7 +48,9 @@ import com.spotify.styx.model.data.EventInfo;
 import com.spotify.styx.model.data.WorkflowInstanceExecutionData;
 import com.spotify.styx.serialization.Json;
 import com.spotify.styx.util.EventUtil;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.security.GeneralSecurityException;
 import java.time.Instant;
@@ -60,7 +63,6 @@ import java.util.concurrent.CompletionStage;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 import okhttp3.HttpUrl.Builder;
-import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
@@ -95,12 +97,8 @@ class StyxOkHttpClient implements StyxClient {
     this.auth = Objects.requireNonNull(auth, "auth");
   }
 
-  public static StyxClient create(String apiHost) {
+  static StyxClient create(String apiHost) {
     return create(apiHost, FutureOkHttpClient.createDefault(), GoogleIdTokenAuth.ofDefaultCredential());
-  }
-
-  public static StyxClient create(String apiHost, OkHttpClient client) {
-    return create(apiHost, FutureOkHttpClient.create(client), GoogleIdTokenAuth.ofDefaultCredential());
   }
 
   static StyxClient create(String apiHost, FutureOkHttpClient client, GoogleIdTokenAuth auth) {
@@ -120,30 +118,31 @@ class StyxOkHttpClient implements StyxClient {
                                                                     String parameter) {
     return execute(forUri(urlBuilder("status", "events", componentId, workflowId, parameter)))
         .thenApply(response -> {
-          final JsonNode jsonNode;
+            final JsonElement jsonNode;
           try (final ResponseBody responseBody = response.body()) {
-            jsonNode = Json.OBJECT_MAPPER.readTree(responseBody.bytes());
+            jsonNode = GSON.fromJson(new InputStreamReader(new ByteArrayInputStream(
+                responseBody.bytes())), JsonElement.class);
           } catch (IOException e) {
             throw new RuntimeException("Invalid json returned from API", e);
           }
 
-          if (!jsonNode.isObject()) {
+          if (!jsonNode.isJsonObject()) {
             throw new RuntimeException("Unexpected json returned from API");
           }
 
-          final ArrayNode events = ((ObjectNode) jsonNode).withArray("events");
+          final JsonArray events = jsonNode.getAsJsonObject().get("events").getAsJsonArray();
 
           return StreamSupport.stream(events.spliterator(), false)
               .map(eventWithTimestamp -> {
-                final long ts = eventWithTimestamp.get("timestamp").asLong();
-                final JsonNode event = eventWithTimestamp.get("event");
+                final long ts = eventWithTimestamp.getAsJsonObject().get("timestamp").getAsLong();
+                final JsonObject event = eventWithTimestamp.getAsJsonObject().get("event").getAsJsonObject();
 
                 try {
                   final Event typedEvent = Json.OBJECT_MAPPER.convertValue(event, Event.class);
                   return EventInfo.create(ts, EventUtil.name(typedEvent), EventUtil.info(typedEvent));
                 } catch (IllegalArgumentException e) {
                   // fall back to just inspecting the json
-                  return EventInfo.create(ts, event.get("@type").asText(), "");
+                  return EventInfo.create(ts, event.get("@type").getAsString(), event.toString());
                 }
               })
               .collect(Collectors.toList());
@@ -347,7 +346,7 @@ class StyxOkHttpClient implements StyxClient {
   private <T> CompletionStage<T> execute(Request request, Class<T> tClass) {
     return execute(request).thenApply(response -> {
       try (final ResponseBody responseBody = response.body()) {
-        return Json.OBJECT_MAPPER.readValue(responseBody.bytes(), tClass);
+        return GSON.fromJson(new InputStreamReader(new ByteArrayInputStream(responseBody.bytes())), tClass);
       } catch (IOException e) {
         throw new RuntimeException("Error while reading the received payload: " + e.getMessage(), e);
       }

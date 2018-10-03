@@ -23,6 +23,10 @@ package com.spotify.styx.model;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.auto.value.AutoValue;
+import com.google.gson.Gson;
+import com.google.gson.TypeAdapter;
+import com.google.gson.annotations.SerializedName;
+import com.ryanharter.auto.value.gson.GenerateTypeAdapter;
 import java.util.Comparator;
 
 /**
@@ -32,12 +36,14 @@ import java.util.Comparator;
  * independent of the current configuration of a {@link Workflow}.
  */
 @AutoValue
+@GenerateTypeAdapter
 public abstract class WorkflowId {
 
   public static final Comparator<WorkflowId> KEY_COMPARATOR =
       (a, b) -> a.toKey().compareTo(b.toKey());
 
   @JsonProperty
+  @SerializedName("component_id")
   public abstract String componentId();
 
   @JsonProperty
@@ -66,5 +72,9 @@ public abstract class WorkflowId {
     }
 
     return create(key.substring(0, hashPos), key.substring(hashPos + 1));
+  }
+
+  public static TypeAdapter<WorkflowId> typeAdapter(Gson gson) {
+    return new WorkflowId_GsonTypeAdapter(gson);
   }
 }

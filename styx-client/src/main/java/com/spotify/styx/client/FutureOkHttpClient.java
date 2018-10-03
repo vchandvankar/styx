@@ -20,86 +20,139 @@
 
 package com.spotify.styx.client;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.spotify.styx.serialization.Json;
+import static com.spotify.styx.client.Json.GSON;
+
+import com.google.api.client.http.ByteArrayContent;
+import com.google.api.client.http.GenericUrl;
+import com.google.api.client.http.HttpContent;
+import com.google.api.client.http.HttpHeaders;
+import com.google.api.client.http.HttpResponse;
+import com.google.api.client.http.HttpTransport;
+import com.google.api.client.http.javanet.NetHttpTransport;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
-import okhttp3.Call;
-import okhttp3.Callback;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
-import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import okhttp3.Response.Builder;
+import okhttp3.ResponseBody;
+import okio.Buffer;
 import okio.ByteString;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Wrap OkHttpClient and return a CompletionStage instead of having to pass callbacks.
- */
 class FutureOkHttpClient implements AutoCloseable {
 
   private static final Logger log = LoggerFactory.getLogger(FutureOkHttpClient.class);
 
   private static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
   private static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(90);
+  // TODO: no way to set write timeout, enforce a full request timeout instead?
   private static final Duration DEFAULT_WRITE_TIMEOUT = Duration.ofSeconds(90);
   private static final MediaType APPLICATION_JSON =
       Objects.requireNonNull(MediaType.parse("application/json"));
 
-  private final OkHttpClient client;
+  private final HttpTransport transport;
 
-  static FutureOkHttpClient create(OkHttpClient client) {
-    return new FutureOkHttpClient(client);
+  private final ForkJoinPool forkJoinPool = new ForkJoinPool();
+
+  static FutureOkHttpClient create(HttpTransport transport) {
+    return new FutureOkHttpClient(transport);
   }
 
   static FutureOkHttpClient createDefault() {
-    return FutureOkHttpClient.create(
-        new OkHttpClient.Builder()
-            .connectTimeout(DEFAULT_CONNECT_TIMEOUT.getSeconds(), TimeUnit.SECONDS)
-            .readTimeout(DEFAULT_READ_TIMEOUT.getSeconds(), TimeUnit.SECONDS)
-            .writeTimeout(DEFAULT_WRITE_TIMEOUT.getSeconds(), TimeUnit.SECONDS)
-            .build()
-    );
+    return FutureOkHttpClient.create(new NetHttpTransport());
   }
 
-  private FutureOkHttpClient(OkHttpClient client) {
-    this.client = client;
+  private FutureOkHttpClient(HttpTransport transport) {
+    this.transport = Objects.requireNonNull(transport);
   }
 
   CompletionStage<Response> send(Request request) {
-    log.debug("{} {}", request.method(), request.url());
-    final long start = System.nanoTime();
 
-    final CompletableFuture<Response> future = new CompletableFuture<>();
+    // mx native-image --enable-https --enable-all-security-services -H:+JNI -H:IncludeResourceBundles=net.sourceforge.argparse4j.internal.ArgumentParserImpl -H:ReflectionConfigurationFiles=reflectionconfig.json -jar /Users/dano/projects/styx/styx-cli/target/styx-cli.jar
 
-    client.newCall(request).enqueue(new Callback() {
-      @Override
-      public void onFailure(Call call, IOException e) {
+    return CompletableFuture.completedFuture(request).thenApplyAsync(r -> {
+      log.debug("{} {}", request.method(), request.url());
+      final long start = System.nanoTime();
+      try {
+        HttpContent content = null;
+        if (request.body() != null) {
+          final Buffer buffer = new Buffer();
+          request.body().writeTo(buffer);
+          content = new ByteArrayContent(request.body().contentType().toString(), buffer.readByteArray());
+        }
+        HttpHeaders headers = new HttpHeaders();
+        request.headers().toMultimap().forEach((k, vs) -> {
+          List<String> values = (List<String>) headers.get(k);
+          if (values == null) {
+            values = new ArrayList<>();
+            headers.set(k, values);
+          }
+          values.addAll(vs);
+        });
+        final HttpResponse response = transport.createRequestFactory()
+            .buildRequest(request.method(), new GenericUrl(request.url().toString()), content)
+            .setConnectTimeout((int) DEFAULT_CONNECT_TIMEOUT.toMillis())
+            .setReadTimeout((int) DEFAULT_READ_TIMEOUT.toMillis())
+            .setHeaders(headers)
+            .execute();
+        final byte[] payload;
+        try (InputStream is = response.getContent()) {
+          payload = toByteArray(is);
+        }
+        log.debug("{} {}: {} {} (latency: {}s)", request.method(), request.url(), response.getStatusCode(),
+            response.getStatusMessage(), latency(start));
+        final Builder builder = new Builder();
+        response.getHeaders().forEach((k, v) -> {
+          builder.addHeader(k, v.toString());
+        });
+        final MediaType mediaType;
+        if (response.getMediaType() != null) {
+          mediaType = MediaType.parse(response.getMediaType().toString());
+        } else {
+          mediaType = null;
+        }
+        return builder
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(response.getStatusCode())
+            .body(ResponseBody.create(mediaType, payload))
+            .message(response.getStatusMessage())
+            .build();
+      } catch (IOException e) {
         log.debug("{} {}: failed (latency: {}s)", request.method(), request.url(), latency(start), e);
-        future.completeExceptionally(e);
+        throw new CompletionException(e);
       }
-
-      @Override
-      public void onResponse(Call call, Response response) throws IOException {
-        log.debug("{} {}: {} {} (latency: {}s)", request.method(), request.url(), response.code(), response.message(),
-            latency(start));
-        future.complete(response);
-      }
-    });
-
-    return future;
+    }, forkJoinPool);
   }
 
-  private static String latency(long start) {
+  private static byte[] toByteArray(InputStream is) throws IOException {
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    final byte[] buf = new byte[1024];
+    int len;
+    while ((len = is.read(buf)) != -1) {
+      baos.write(buf, 0, len);
+    }
+    return baos.toByteArray();
+  }
+
+  private static String latency(long startNanos) {
     final long end = System.nanoTime();
-    return Long.toString(TimeUnit.NANOSECONDS.toSeconds(end - start));
+    return Long.toString(TimeUnit.NANOSECONDS.toSeconds(end - startNanos));
   }
 
   private static Request internalForUri(HttpUrl uri, String method, ByteString payload) {
@@ -109,11 +162,8 @@ class FutureOkHttpClient implements AutoCloseable {
   }
 
   static Request forUri(HttpUrl uri, String method, Object payload) {
-    try {
-      return internalForUri(uri, method, Json.serialize(payload));
-    } catch (JsonProcessingException e) {
-      throw new RuntimeException(e);
-    }
+    final String json = GSON.toJson(payload);
+    return internalForUri(uri, method, ByteString.encodeUtf8(json));
   }
 
   static Request forUri(HttpUrl.Builder uriBuilder, String method, Object payload) {
@@ -138,7 +188,5 @@ class FutureOkHttpClient implements AutoCloseable {
 
   @Override
   public void close() {
-    client.connectionPool().evictAll();
-    client.dispatcher().executorService().shutdown();
   }
 }

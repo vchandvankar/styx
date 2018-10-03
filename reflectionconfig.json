@@ -1,0 +1,47 @@
+[
+  {
+    "name" : "com.google.api.client.json.GenericJson",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allPublicFields" : true,
+    "allDeclaredFields" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true
+  },
+  {
+    "name" : "com.google.api.client.auth.oauth2.TokenErrorResponse",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allPublicFields" : true,
+    "allDeclaredFields" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true
+  },
+  {
+    "name" : "com.google.api.client.auth.oauth2.TokenRequest",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allPublicFields" : true,
+    "allDeclaredFields" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true
+  },
+  {
+    "name" : "com.google.api.client.auth.oauth2.TokenResponse",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allPublicFields" : true,
+    "allDeclaredFields" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true
+  },
+  {
+    "name" : "com.google.api.client.auth.oauth2.RefreshTokenRequest",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allPublicFields" : true,
+    "allDeclaredFields" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true
+  }
+]

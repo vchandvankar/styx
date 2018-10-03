@@ -23,18 +23,24 @@ package com.spotify.styx.model;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.auto.value.AutoValue;
+import com.google.gson.Gson;
+import com.google.gson.TypeAdapter;
+import com.google.gson.annotations.SerializedName;
+import com.ryanharter.auto.value.gson.GenerateTypeAdapter;
 import java.util.Comparator;
 
 /**
  * An instantiation of a {@link Workflow}.
  */
 @AutoValue
+@GenerateTypeAdapter
 public abstract class WorkflowInstance {
 
   public static final Comparator<WorkflowInstance> KEY_COMPARATOR =
       (a, b) -> a.toKey().compareTo(b.toKey());
 
   @JsonProperty
+  @SerializedName("workflow_id")
   public abstract WorkflowId workflowId();
 
   /**
@@ -65,6 +71,10 @@ public abstract class WorkflowInstance {
 
     final WorkflowId workflowId = WorkflowId.parseKey(key.substring(0, lastHashPos));
     return create(workflowId, key.substring(lastHashPos + 1));
+  }
+
+  public static TypeAdapter<WorkflowInstance> typeAdapter(Gson gson) {
+    return new WorkflowInstance_GsonTypeAdapter(gson);
   }
 
   @Override
