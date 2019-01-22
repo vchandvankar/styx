@@ -30,26 +30,26 @@ public class StyxClientFactory {
   }
 
   public static StyxClient create(String apiHost) {
-    return StyxOkHttpClient.create(apiHost);
+    return DefaultStyxClient.create(apiHost);
   }
 
   public static StyxStatusClient createStatusClient(String apiHost) {
-    return StyxOkHttpClient.create(apiHost);
+    return DefaultStyxClient.create(apiHost);
   }
 
   public static StyxBackfillClient createBackfillClient(String apiHost) {
-    return StyxOkHttpClient.create(apiHost);
+    return DefaultStyxClient.create(apiHost);
   }
 
   public static StyxSchedulerClient createSchedulerClient(String apiHost) {
-    return StyxOkHttpClient.create(apiHost);
+    return DefaultStyxClient.create(apiHost);
   }
 
   public static StyxResourceClient createResourceClient(String apiHost) {
-    return StyxOkHttpClient.create(apiHost);
+    return DefaultStyxClient.create(apiHost);
   }
 
   public static StyxWorkflowClient createWorkflowClient(String apiHost) {
-    return StyxOkHttpClient.create(apiHost);
+    return DefaultStyxClient.create(apiHost);
   }
 }

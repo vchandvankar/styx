@@ -20,11 +20,12 @@
 
 package com.spotify.styx.client;
 
-import static com.spotify.styx.client.FutureOkHttpClient.forUri;
-
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.spotify.apollo.Status;
+import com.spotify.apollo.StatusType;
 import com.spotify.styx.api.Api;
 import com.spotify.styx.api.BackfillPayload;
 import com.spotify.styx.api.BackfillsPayload;
@@ -49,6 +50,10 @@ import com.spotify.styx.serialization.Json;
 import com.spotify.styx.util.EventUtil;
 import java.io.IOException;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpResponse.BodyHandlers;
 import java.security.GeneralSecurityException;
 import java.time.Instant;
 import java.util.Arrays;
@@ -57,35 +62,33 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
-import okhttp3.HttpUrl.Builder;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
-import okhttp3.ResponseBody;
+import okhttp3.HttpUrl;
+import okio.ByteString;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Styx OkHttp Client Implementation. In case of API errors, the {@link Throwable} in the returned
+ * Default Styx Client Implementation. In case of API errors, the {@link Throwable} in the returned
  * {@link CompletionStage} will be of kind {@link ApiErrorException}. Other errors will be treated
  * as {@link RuntimeException} instead.
  */
-class StyxOkHttpClient implements StyxClient {
+class DefaultStyxClient implements StyxClient {
 
-  private static final Logger LOG = LoggerFactory.getLogger(StyxOkHttpClient.class);
+  private static final Logger LOG = LoggerFactory.getLogger(DefaultStyxClient.class);
 
   static final String STYX_API_VERSION = Api.Version.V3.name().toLowerCase();
 
   private static final String STYX_CLIENT_VERSION =
-      "Styx Client " + StyxOkHttpClient.class.getPackage().getImplementationVersion();
+      "Styx Client " + DefaultStyxClient.class.getPackage().getImplementationVersion();
 
   private final URI apiHost;
-  private final FutureOkHttpClient client;
   private final GoogleIdTokenAuth auth;
+  private final HttpClient client;
 
-  private StyxOkHttpClient(String apiHost, FutureOkHttpClient client, GoogleIdTokenAuth auth) {
+  private DefaultStyxClient(String apiHost, HttpClient client, GoogleIdTokenAuth auth) {
     if (apiHost.contains("://")) {
       this.apiHost = URI.create(apiHost);
     } else {
@@ -96,20 +99,20 @@ class StyxOkHttpClient implements StyxClient {
   }
 
   public static StyxClient create(String apiHost) {
-    return create(apiHost, FutureOkHttpClient.createDefault(), GoogleIdTokenAuth.ofDefaultCredential());
+    return create(apiHost, HttpClient.newHttpClient(), GoogleIdTokenAuth.ofDefaultCredential());
   }
 
-  public static StyxClient create(String apiHost, OkHttpClient client) {
-    return create(apiHost, FutureOkHttpClient.create(client), GoogleIdTokenAuth.ofDefaultCredential());
+  public static StyxClient create(String apiHost, HttpClient client) {
+    return create(apiHost, client, GoogleIdTokenAuth.ofDefaultCredential());
   }
 
-  static StyxClient create(String apiHost, FutureOkHttpClient client, GoogleIdTokenAuth auth) {
-    return new StyxOkHttpClient(apiHost, client, auth);
+  static StyxClient create(String apiHost, HttpClient client, GoogleIdTokenAuth auth) {
+    return new DefaultStyxClient(apiHost, client, auth);
   }
 
   @Override
   public CompletionStage<RunStateDataPayload> activeStates(Optional<String> componentId) {
-    final Builder url = urlBuilder("status", "activeStates");
+    final HttpUrl.Builder url = urlBuilder("status", "activeStates");
     componentId.ifPresent(id -> url.addQueryParameter("component", id));
     return execute(forUri(url), RunStateDataPayload.class);
   }
@@ -121,8 +124,8 @@ class StyxOkHttpClient implements StyxClient {
     return execute(forUri(urlBuilder("status", "events", componentId, workflowId, parameter)))
         .thenApply(response -> {
           final JsonNode jsonNode;
-          try (final ResponseBody responseBody = response.body()) {
-            jsonNode = Json.OBJECT_MAPPER.readTree(responseBody.bytes());
+          try {
+            jsonNode = Json.OBJECT_MAPPER.readTree(response.body());
           } catch (IOException e) {
             throw new RuntimeException("Invalid json returned from API", e);
           }
@@ -226,7 +229,7 @@ class StyxOkHttpClient implements StyxClient {
   public CompletionStage<Void> haltWorkflowInstance(String componentId,
                                                     String workflowId,
                                                     String parameter) {
-    final Builder url = urlBuilder("scheduler", "halt");
+    final HttpUrl.Builder url = urlBuilder("scheduler", "halt");
     final WorkflowInstance workflowInstance = WorkflowInstance.create(
         WorkflowId.create(componentId, workflowId),
         parameter);
@@ -238,7 +241,7 @@ class StyxOkHttpClient implements StyxClient {
   public CompletionStage<Void> retryWorkflowInstance(String componentId,
                                                      String workflowId,
                                                      String parameter) {
-    final Builder url = urlBuilder("scheduler", "retry");
+    final HttpUrl.Builder url = urlBuilder("scheduler", "retry");
     final WorkflowInstance workflowInstance = WorkflowInstance.create(
         WorkflowId.create(componentId, workflowId),
         parameter);
@@ -262,13 +265,13 @@ class StyxOkHttpClient implements StyxClient {
 
   @Override
   public CompletionStage<Resource> resource(String resourceId) {
-    final Builder url = urlBuilder("resources", resourceId);
+    final HttpUrl.Builder url = urlBuilder("resources", resourceId);
     return execute(forUri(url), Resource.class);
   }
 
   @Override
   public CompletionStage<ResourcesPayload> resourceList() {
-    final Builder url = urlBuilder("resources");
+    final HttpUrl.Builder url = urlBuilder("resources");
     return execute(forUri(url), ResourcesPayload.class);
   }
 
@@ -314,7 +317,7 @@ class StyxOkHttpClient implements StyxClient {
         .id(backfillId)
         .concurrency(concurrency)
         .build();
-    final Builder url = urlBuilder("backfills", backfillId);
+    final HttpUrl.Builder url = urlBuilder("backfills", backfillId);
     return execute(forUri(url, "PUT", editableBackfillInput), Backfill.class);
   }
 
@@ -326,7 +329,7 @@ class StyxOkHttpClient implements StyxClient {
 
   @Override
   public CompletionStage<BackfillPayload> backfill(String backfillId, boolean includeStatus) {
-    final Builder url = urlBuilder("backfills", backfillId);
+    final HttpUrl.Builder url = urlBuilder("backfills", backfillId);
     url.addQueryParameter("status", Boolean.toString(includeStatus));
     return execute(forUri(url), BackfillPayload.class);
   }
@@ -336,7 +339,7 @@ class StyxOkHttpClient implements StyxClient {
                                                         Optional<String> workflowId,
                                                         boolean showAll,
                                                         boolean includeStatus) {
-    final Builder url = urlBuilder("backfills");
+    final HttpUrl.Builder url = urlBuilder("backfills");
     componentId.ifPresent(c -> url.addQueryParameter("component", c));
     workflowId.ifPresent(w -> url.addQueryParameter("workflow", w));
     url.addQueryParameter("showAll", Boolean.toString(showAll));
@@ -344,26 +347,25 @@ class StyxOkHttpClient implements StyxClient {
     return execute(forUri(url), BackfillsPayload.class);
   }
 
-  private <T> CompletionStage<T> execute(Request request, Class<T> tClass) {
+  private <T> CompletionStage<T> execute(HttpRequest.Builder request, Class<T> tClass) {
     return execute(request).thenApply(response -> {
-      try (final ResponseBody responseBody = response.body()) {
-        return Json.OBJECT_MAPPER.readValue(responseBody.bytes(), tClass);
+      try {
+        return Json.OBJECT_MAPPER.readValue(response.body(), tClass);
       } catch (IOException e) {
         throw new RuntimeException("Error while reading the received payload: " + e.getMessage(), e);
       }
     });
   }
 
-  private Request decorateRequest(Request request, String requestId, Optional<String> authToken) {
-    final Request.Builder builder = request
-        .newBuilder()
-        .addHeader("User-Agent", STYX_CLIENT_VERSION)
-        .addHeader("X-Request-Id", requestId);
-    authToken.ifPresent(t -> builder.addHeader("Authorization", "Bearer " + t));
-    return builder.build();
+  private HttpRequest.Builder decorateRequest(HttpRequest.Builder request, String requestId,
+                                             Optional<String> authToken) {
+    authToken.ifPresent(t -> request.header("Authorization", "Bearer " + t));
+    return request
+        .header("User-Agent", STYX_CLIENT_VERSION)
+        .header("X-Request-Id", requestId);
   }
 
-  private CompletionStage<Response> execute(Request request) {
+  private CompletionStage<HttpResponse<byte[]>> execute(HttpRequest.Builder requestBuilder) {
     final Optional<String> authToken;
     try {
       authToken = auth.getToken(apiHost.toString());
@@ -372,30 +374,41 @@ class StyxOkHttpClient implements StyxClient {
       throw new ClientErrorException("Authentication failure: " + e.getMessage(), e);
     }
     final String requestId = UUID.randomUUID().toString().replace("-", "");  // UUID with no dashes, easier to deal with
-    return client.send(decorateRequest(request, requestId, authToken)).handle((response, e) -> {
+    final HttpRequest request = decorateRequest(requestBuilder, requestId, authToken).build();
+    LOG.debug("{} {}", request.method(), request.uri());
+    final long start = System.nanoTime();
+    return client.sendAsync(request, BodyHandlers.ofByteArray()).handle((response, e) -> {
       if (e != null) {
-        throw new ClientErrorException("Request failed: " + request.method() + " " + request.url(), e);
+        LOG.debug("{} {}: failed (latency: {}s)", request.method(), request.uri(), latency(start), e);
+        throw new ClientErrorException("Request failed: " + request.method() + " " + request.uri(), e);
       } else {
+        LOG.debug("{} {}: {} (latency: {}s)", request.method(), request.uri(), response.statusCode(), latency(start));
         final String effectiveRequestId;
-        final String responseRequestId = response.headers().get("X-Request-Id");
-        if (responseRequestId != null && !responseRequestId.equals(requestId)) {
+        final Optional<String> responseRequestId = response.headers().firstValue("X-Request-Id");
+        if (responseRequestId.isPresent() && !responseRequestId.get().equals(requestId)) {
           // If some proxy etc dropped our request ID header, we might get another one back.
-          effectiveRequestId = responseRequestId;
+          effectiveRequestId = responseRequestId.get();
           LOG.warn("Request ID mismatch: '{}' != '{}'", requestId, responseRequestId);
         } else {
           effectiveRequestId = requestId;
         }
-        if (!response.isSuccessful()) {
-          throw new ApiErrorException(response.code() + " " + response.message(), response.code(),
-                                      authToken.isPresent(), effectiveRequestId);
+        final StatusType status = Status.createForCode(response.statusCode());
+        if (status.family() != StatusType.Family.SUCCESSFUL) {
+          throw new ApiErrorException(status.code() + " " + status.reasonPhrase(), response.statusCode(),
+              authToken.isPresent(), effectiveRequestId);
         }
         return response;
       }
     });
   }
 
-  private Builder urlBuilder(String... pathSegments) {
-    final Builder builder = new Builder()
+  private static String latency(long startNanos) {
+    final long end = System.nanoTime();
+    return Long.toString(TimeUnit.NANOSECONDS.toSeconds(end - startNanos));
+  }
+
+  private HttpUrl.Builder urlBuilder(String... pathSegments) {
+    final HttpUrl.Builder builder = new HttpUrl.Builder()
         .scheme(apiHost.getScheme())
         .host(apiHost.getHost())
         .addPathSegment("api")
@@ -409,6 +422,40 @@ class StyxOkHttpClient implements StyxClient {
 
   @Override
   public void close() {
-    client.close();
+    // nop
+  }
+
+  private static HttpRequest.Builder internalForUri(HttpUrl uri, String method, ByteString payload) {
+    return HttpRequest.newBuilder().uri(uri.uri())
+        .header("Content-Type", "application/json")
+        .method(method, HttpRequest.BodyPublishers.ofByteArray(payload.toByteArray()));
+  }
+
+  static HttpRequest.Builder forUri(HttpUrl uri, String method, Object payload) {
+    try {
+      return internalForUri(uri, method, Json.serialize(payload));
+    } catch (JsonProcessingException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  static HttpRequest.Builder forUri(HttpUrl.Builder uriBuilder, String method, Object payload) {
+    return forUri(uriBuilder.build(), method, payload);
+  }
+
+  static HttpRequest.Builder forUri(HttpUrl uri, String method) {
+    return HttpRequest.newBuilder().uri(uri.uri()).method(method, HttpRequest.BodyPublishers.noBody());
+  }
+
+  static HttpRequest.Builder forUri(HttpUrl.Builder uriBuilder, String method) {
+    return forUri(uriBuilder.build(), method);
+  }
+
+  static HttpRequest.Builder forUri(HttpUrl.Builder uriBuilder) {
+    return forUri(uriBuilder.build());
+  }
+
+  static HttpRequest.Builder forUri(HttpUrl uri) {
+    return HttpRequest.newBuilder().uri(uri.uri());
   }
 }
