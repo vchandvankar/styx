@@ -65,16 +65,13 @@ import io.fabric8.kubernetes.api.model.PodSpecBuilder;
 import io.fabric8.kubernetes.api.model.Quantity;
 import io.fabric8.kubernetes.api.model.QuantityBuilder;
 import io.fabric8.kubernetes.api.model.ResourceRequirementsBuilder;
-import io.fabric8.kubernetes.api.model.Secret;
 import io.fabric8.kubernetes.api.model.SecretVolumeSource;
 import io.fabric8.kubernetes.api.model.SecretVolumeSourceBuilder;
 import io.fabric8.kubernetes.api.model.Volume;
 import io.fabric8.kubernetes.api.model.VolumeBuilder;
 import io.fabric8.kubernetes.api.model.VolumeMount;
 import io.fabric8.kubernetes.api.model.VolumeMountBuilder;
-import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientException;
-import io.fabric8.kubernetes.client.NamespacedKubernetesClient;
 import io.fabric8.kubernetes.client.Watch;
 import io.fabric8.kubernetes.client.Watcher;
 import io.norberg.automatter.AutoMatter;
@@ -146,7 +143,7 @@ class KubernetesDockerRunner implements DockerRunner {
 
   private final ScheduledExecutorService scheduledExecutor;
 
-  private final KubernetesClient client;
+  private final Fabric8KubernetesClient client;
   private final StateManager stateManager;
   private final Stats stats;
   private final KubernetesGCPServiceAccountSecretManager serviceAccountSecretManager;
@@ -157,9 +154,9 @@ class KubernetesDockerRunner implements DockerRunner {
   private final Time time;
   private final ExecutorService executor;
 
-  private Watch watch;
+  private Watch watcher;
 
-  KubernetesDockerRunner(NamespacedKubernetesClient client, StateManager stateManager, Stats stats,
+  KubernetesDockerRunner(Fabric8KubernetesClient client, StateManager stateManager, Stats stats,
                          KubernetesGCPServiceAccountSecretManager serviceAccountSecretManager,
                          Debug debug, String styxEnvironment,
                          int cleanupPodsIntervalSeconds, int podDeletionDelaySeconds,
@@ -179,7 +176,7 @@ class KubernetesDockerRunner implements DockerRunner {
         register(closer, new ForkJoinPool(K8S_POD_PROCESSING_THREADS), "kubernetes-executor"));
   }
 
-  KubernetesDockerRunner(NamespacedKubernetesClient client, StateManager stateManager, Stats stats,
+  KubernetesDockerRunner(Fabric8KubernetesClient client, StateManager stateManager, Stats stats,
                          KubernetesGCPServiceAccountSecretManager serviceAccountSecretManager,
                          Debug debug, String styxEnvironment) {
     this(client, stateManager, stats, serviceAccountSecretManager, debug, styxEnvironment,
@@ -190,8 +187,8 @@ class KubernetesDockerRunner implements DockerRunner {
   @Override
   public void start(WorkflowInstance workflowInstance, RunSpec runSpec) throws IOException {
     // First make cheap check for if pod already exists
-    var existingPod = client.pods().withName(runSpec.executionId()).get();
-    if (existingPod != null) {
+    var existingPod = client.getPod(runSpec.executionId());
+    if (existingPod.isPresent()) {
       LOG.info("Pod already exists, not creating: {}: {}", workflowInstance, existingPod);
       return;
     }
@@ -204,14 +201,13 @@ class KubernetesDockerRunner implements DockerRunner {
     try {
       var pod = createPod(workflowInstance, runSpec, secretSpec, styxEnvironment);
       LOG.info("Creating pod: {}: {}", workflowInstance, pod);
-      var createdPod = client.pods().create(pod);
+      var createdPod = client.createPod(pod);
       stats.recordSubmission(runSpec.executionId());
       LOG.info("Created pod: {}: {}", workflowInstance, createdPod);
     } catch (KubernetesClientException kce) {
       if (kce.getCode() == 409 && kce.getStatus().getReason().equals("AlreadyExists")) {
         LOG.info("Pod already existed when creating: {}: {}", workflowInstance, runSpec.executionId());
         // Already launched, success!
-        return;
       } else {
         throw new IOException("Failed to create Kubernetes pod", kce);
       }
@@ -221,13 +217,14 @@ class KubernetesDockerRunner implements DockerRunner {
   @Override
   public void poll(RunState runState) {
     var executionId = runState.data().executionId().orElseThrow(IllegalArgumentException::new);
-    var pod = client.pods().withName(executionId).get();
-    if (pod == null) {
+    var podOpt = client.getPod(executionId);
+    if (podOpt.isEmpty()) {
       // No pod found. Emit an error guarded by the state counter we are basing the error conclusion on.
       stateManager.receiveIgnoreClosed(
           Event.runError(runState.workflowInstance(), "No pod associated with this instance"), runState.counter());
       return;
     }
+    var pod = podOpt.orElseThrow();
     logEvent(Watcher.Action.MODIFIED, pod, pod.getMetadata().getResourceVersion(), true);
     emitPodEvents(pod, runState);
   }
@@ -267,8 +264,8 @@ class KubernetesDockerRunner implements DockerRunner {
             + STYX_WORKFLOW_SA_SECRET_MOUNT_PATH + " defined that is reserved");
       }
 
-      final Secret secret = client.secrets().withName(specSecret.name()).get();
-      if (secret == null) {
+      var secret = client.getSecret(specSecret.name());
+      if (secret.isEmpty()) {
         LOG.warn("[AUDIT] Workflow {} refers to a non-existent secret {}",
                   workflowInstance.workflowId(), specSecret.name());
         throw new InvalidExecutionException(
@@ -457,11 +454,12 @@ class KubernetesDockerRunner implements DockerRunner {
 
   private boolean shouldDeleteNonTerminatedPodWithoutRunState(WorkflowInstance workflowInstance, String name) {
     // Fetch the pod here to avoid acting on stale information
-    final Pod pod = client.pods().withName(name).get();
-    if (pod == null) {
+    var podOpt = client.getPod(name);
+    if (podOpt.isEmpty()) {
       // The pod is gone, nothing left to do here
       return false;
     }
+    var pod = podOpt.orElseThrow();
     // if not terminated, delete directly
     if (!isTerminated(pod)) {
       return shouldDeletePod(workflowInstance, pod, "No RunState, not terminated");
@@ -479,12 +477,12 @@ class KubernetesDockerRunner implements DockerRunner {
   static Optional<ContainerStatus> getMainContainerStatus(Pod pod) {
     return readPodWorkflowInstance(pod)
         .flatMap(wfi -> pod.getStatus().getContainerStatuses().stream()
-            .filter(status -> isMainContainer(status.getName(), pod))
+            .filter(status -> isMainContainer(status.getName()))
             .findAny());
   }
 
   @VisibleForTesting
-  static boolean isMainContainer(String name, Pod pod) {
+  static boolean isMainContainer(String name) {
     return name.equals(MAIN_CONTAINER_NAME);
   }
 
@@ -518,19 +516,16 @@ class KubernetesDockerRunner implements DockerRunner {
 
   @Override
   public void close() throws IOException {
-    if (watch != null) {
-      watch.close();
-    }
     closer.close();
   }
 
-  public void init() {
+  void init() {
     scheduleWithJitter(this::cleanupPods, scheduledExecutor, cleanupPodsInterval);
 
     final PodWatcher watcher = new PodWatcher();
     scheduleWithJitter(watcher::processPodUpdates, scheduledExecutor, PROCESS_POD_UPDATE_INTERVAL);
 
-    watch = client.pods().watch(watcher);
+    this.watcher = closer.register(client.watchPods(watcher));
   }
 
   private void cleanupPods() {
@@ -551,7 +546,7 @@ class KubernetesDockerRunner implements DockerRunner {
    */
   @VisibleForTesting
   void tryCleanupPods() {
-    var pods = client.pods().list().getItems();
+    var pods = client.listPods().getItems();
     pods.stream()
         .map(pod -> runAsync(guard(() -> tryCleanupPod(pod)), executor))
         .collect(toList())
@@ -577,7 +572,7 @@ class KubernetesDockerRunner implements DockerRunner {
                        ? shouldDeletePodWithRunState(workflowInstance.orElseThrow(), pod, runState.orElseThrow())
                        : shouldDeletePodWithoutRunState(workflowInstance.orElseThrow(), pod);
     if (shouldDelete) {
-      client.pods().delete(pod);
+      client.deletePod(pod.getMetadata().getName());
     }
   }
 
@@ -671,13 +666,11 @@ class KubernetesDockerRunner implements DockerRunner {
 
   public class PodWatcher implements Watcher<Pod> {
 
-    private static final int RECONNECT_DELAY_SECONDS = 1;
-
     private final ConcurrentMap<String, WorkflowInstance> podUpdates = new ConcurrentHashMap<>();
 
     /**
      * @implNote In order to be able to keep up with the stream of events from k8s, this method should
-     *           not perform any expensive processing or blocking IO.
+     *     not perform any expensive processing or blocking IO.
      */
     @Override
     public void eventReceived(Action action, Pod pod) {
@@ -689,7 +682,7 @@ class KubernetesDockerRunner implements DockerRunner {
       logEvent(action, pod, pod.getMetadata().getResourceVersion(), false);
 
       // Ignore pod deletions
-      if (action == Action.DELETED) {
+      if (action == Watcher.Action.DELETED) {
         return;
       }
 
@@ -724,10 +717,11 @@ class KubernetesDockerRunner implements DockerRunner {
     private void processPodUpdate(String podName, WorkflowInstance instance) {
       LOG.debug("Processing pod update: {}: {}", podName, instance);
 
-      final Pod pod = client.pods().withName(podName).get();
-      if (pod == null) {
+      var podOpt = client.getPod(podName);
+      if (podOpt.isEmpty()) {
         return;
       }
+      var pod = podOpt.orElseThrow();
 
       final Optional<RunState> runState = lookupPodRunState(pod, instance);
       if (!runState.isPresent()) {
