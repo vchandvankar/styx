@@ -27,15 +27,15 @@ public interface WorkflowValidator {
 
   List<String> validateWorkflow(Workflow workflow);
 
-  default <T extends Comparable<T>> void lowerLimit(List<String> errors, T value, T limit, String message) {
+  static <T extends Comparable<T>> void lowerLimit(List<String> errors, T value, T limit, String message) {
     limit(errors, value.compareTo(limit) < 0, value, limit, message);
   }
 
-  default <T extends Comparable<T>> void upperLimit(List<String> errors, T value, T limit, String message) {
+  static <T extends Comparable<T>> void upperLimit(List<String> errors, T value, T limit, String message) {
     limit(errors, value.compareTo(limit) > 0, value, limit, message);
   }
 
-  default <T extends Comparable<T>> void limit(List<String> errors, boolean isError, T value, T limit, String message) {
+  static <T extends Comparable<T>> void limit(List<String> errors, boolean isError, T value, T limit, String message) {
     if (isError) {
       errors.add(message + ": " + value + ", limit = " + limit);
     }

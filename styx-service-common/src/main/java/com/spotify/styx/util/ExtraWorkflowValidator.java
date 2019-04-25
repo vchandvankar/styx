@@ -20,6 +20,8 @@
 
 package com.spotify.styx.util;
 
+import static com.spotify.styx.util.WorkflowValidator.upperLimit;
+
 import com.google.common.base.Preconditions;
 import com.spotify.styx.model.Workflow;
 import java.time.Duration;
@@ -52,9 +54,8 @@ public class ExtraWorkflowValidator implements WorkflowValidator {
 
     var cfg = workflow.configuration();
 
-    cfg.runningTimeout().ifPresent(timeout -> {
-      upperLimit(e, timeout, maxRunningTimeout, "running timeout is too big");
-    });
+    cfg.runningTimeout().ifPresent(timeout ->
+        upperLimit(e, timeout, maxRunningTimeout, "running timeout is too big"));
 
     cfg.secret().ifPresent(secret -> {
       if (!secretWhitelist.contains(secret.name())) {

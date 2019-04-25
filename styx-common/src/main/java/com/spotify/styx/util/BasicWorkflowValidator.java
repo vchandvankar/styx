@@ -20,6 +20,8 @@
 
 package com.spotify.styx.util;
 
+import static com.spotify.styx.util.WorkflowValidator.lowerLimit;
+import static com.spotify.styx.util.WorkflowValidator.upperLimit;
 import static java.lang.String.format;
 
 import com.spotify.styx.model.Workflow;
@@ -119,9 +121,8 @@ public class BasicWorkflowValidator implements WorkflowValidator {
       e.add("invalid schedule");
     }
 
-    cfg.runningTimeout().ifPresent(timeout -> {
-      lowerLimit(e, timeout, MIN_RUNNING_TIMEOUT, "running timeout is too small");
-    });
+    cfg.runningTimeout().ifPresent(timeout ->
+        lowerLimit(e, timeout, MIN_RUNNING_TIMEOUT, "running timeout is too small"));
 
     return e;
   }

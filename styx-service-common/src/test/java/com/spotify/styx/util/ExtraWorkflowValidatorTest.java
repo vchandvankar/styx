@@ -53,12 +53,20 @@ public class ExtraWorkflowValidatorTest {
   public void setUp() throws Exception {
     when(basicWorkflowValidator.validateWorkflow(any())).thenReturn(List.of());
     sut = new ExtraWorkflowValidator(basicWorkflowValidator, Duration.ofDays(1),
-        Set.of(FULL_WORKFLOW_CONFIGURATION.secret().get().name()));
+        Set.of(FULL_WORKFLOW_CONFIGURATION.secret().orElseThrow().name()));
   }
 
   @Test
   public void validateValidWorkflow() {
     assertThat(sut.validateWorkflow(Workflow.create("test", FULL_WORKFLOW_CONFIGURATION)), is(empty()));
+  }
+
+  @Test
+  public void shouldPropagateErrorFromDelegate() {
+    var errors = List.of("foo", "bar");
+    when(basicWorkflowValidator.validateWorkflow(any())).thenReturn(errors);
+
+    assertThat(sut.validateWorkflow(Workflow.create("test", FULL_WORKFLOW_CONFIGURATION)), is(errors));
   }
 
   @Test
