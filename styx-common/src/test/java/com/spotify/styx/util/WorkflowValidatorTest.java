@@ -171,7 +171,7 @@ public class WorkflowValidatorTest {
         .add(limit("too many env vars", env.size(), MAX_ENV_VARS))
         .add(limit("env too big", envSize, MAX_ENV_SIZE))
         .add(limit("running timeout is too small", runningTimeout, MIN_RUNNING_TIMEOUT))
-            .add("service account format is not valid")
+        .add("service account is not a valid email address: " + serviceAccount)
         .build();
 
     assertThat(errors, containsInAnyOrder(expectedErrors.toArray()));
@@ -256,13 +256,14 @@ public class WorkflowValidatorTest {
             .build();
 
     assertThat(sut.validateWorkflow(Workflow.create("test", configuration)),
-            contains("service account format is not valid"));
+            contains("service account is not a valid email address: " + serviceAccount));
   }
 
   @Test
   public void shouldRejectSpaceServiceAccountWithTailingSpace() {
     String[] invalidServiceAccounts = {"sa@abc.com ", "sa@abc.com\n"};
-
+    // We are looping through the invalid service account list because JUnitParameter removes
+    // the trailing spaces and new line but that are the cases we need to test
     for (String serviceAccount : invalidServiceAccounts) {
       WorkflowConfiguration configuration =
           WorkflowConfigurationBuilder.from(FULL_WORKFLOW_CONFIGURATION)
@@ -271,7 +272,7 @@ public class WorkflowValidatorTest {
 
       assertThat(
           sut.validateWorkflow(Workflow.create("test", configuration)),
-          contains("service account format is not valid"));
+          contains("service account is not a valid email address: " + serviceAccount));
       }
   }
 
