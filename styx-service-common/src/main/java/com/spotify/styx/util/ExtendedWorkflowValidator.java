@@ -31,16 +31,16 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Additional workflow validation can only be done on service side.
+ * Extended workflow validation can only be done on service side.
  */
-public class ExtraWorkflowValidator implements WorkflowValidator {
+public class ExtendedWorkflowValidator implements WorkflowValidator {
 
   private final WorkflowValidator workflowValidator;
   private final Duration maxRunningTimeout;
   private final Set<String> secretWhitelist;
 
-  public ExtraWorkflowValidator(WorkflowValidator workflowValidator, Duration maxRunningTimeout,
-                                Set<String> secretWhitelist) {
+  public ExtendedWorkflowValidator(WorkflowValidator workflowValidator, Duration maxRunningTimeout,
+                                   Set<String> secretWhitelist) {
     Preconditions.checkArgument(maxRunningTimeout != null && !maxRunningTimeout.isNegative(),
         "Max Running timeout should be positive");
     this.workflowValidator = Objects.requireNonNull(workflowValidator);

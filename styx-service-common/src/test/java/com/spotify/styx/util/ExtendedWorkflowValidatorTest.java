@@ -41,7 +41,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 
 @RunWith(MockitoJUnitRunner.class)
-public class ExtraWorkflowValidatorTest {
+public class ExtendedWorkflowValidatorTest {
 
   private static final Duration MAX_RUNNING_TIMEOUT = Duration.ofDays(1);
 
@@ -52,7 +52,7 @@ public class ExtraWorkflowValidatorTest {
   @Before
   public void setUp() throws Exception {
     when(basicWorkflowValidator.validateWorkflow(any())).thenReturn(List.of());
-    sut = new ExtraWorkflowValidator(basicWorkflowValidator, Duration.ofDays(1),
+    sut = new ExtendedWorkflowValidator(basicWorkflowValidator, Duration.ofDays(1),
         Set.of(FULL_WORKFLOW_CONFIGURATION.secret().orElseThrow().name()));
   }
 
@@ -94,7 +94,7 @@ public class ExtraWorkflowValidatorTest {
 
   @Test(expected = IllegalArgumentException.class)
   public void shouldFailIfInvalidMaxRunningTimeout() {
-    new ExtraWorkflowValidator(basicWorkflowValidator, Duration.ofDays(-1), Set.of());
+    new ExtendedWorkflowValidator(basicWorkflowValidator, Duration.ofDays(-1), Set.of());
   }
 
   private String limit(String msg, Object value, Object limit) {

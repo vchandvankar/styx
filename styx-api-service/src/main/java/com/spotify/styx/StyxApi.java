@@ -57,7 +57,7 @@ import com.spotify.styx.storage.Storage;
 import com.spotify.styx.util.BasicWorkflowValidator;
 import com.spotify.styx.util.CachedSupplier;
 import com.spotify.styx.util.DockerImageValidator;
-import com.spotify.styx.util.ExtraWorkflowValidator;
+import com.spotify.styx.util.ExtendedWorkflowValidator;
 import com.spotify.styx.util.StorageFactory;
 import com.spotify.styx.util.Time;
 import com.typesafe.config.Config;
@@ -198,7 +198,7 @@ public class StyxApi implements AppInit {
     final WorkflowActionAuthorizer workflowActionAuthorizer =
         new WorkflowActionAuthorizer(storage, serviceAccountUsageAuthorizer);
 
-    var workflowValidator = new ExtraWorkflowValidator(
+    var workflowValidator = new ExtendedWorkflowValidator(
         new BasicWorkflowValidator(new DockerImageValidator()), runningStateTtl, secretWhitelist);
 
     final WorkflowResource workflowResource = new WorkflowResource(storage, workflowValidator,

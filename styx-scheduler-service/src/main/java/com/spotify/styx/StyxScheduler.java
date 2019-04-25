@@ -91,7 +91,7 @@ import com.spotify.styx.util.CachedSupplier;
 import com.spotify.styx.util.CounterSnapshotFactory;
 import com.spotify.styx.util.Debug;
 import com.spotify.styx.util.DockerImageValidator;
-import com.spotify.styx.util.ExtraWorkflowValidator;
+import com.spotify.styx.util.ExtendedWorkflowValidator;
 import com.spotify.styx.util.IsClosedException;
 import com.spotify.styx.util.RetryUtil;
 import com.spotify.styx.util.ShardedCounter;
@@ -394,7 +394,7 @@ public class StyxScheduler implements AppInit {
 
     final RateLimiter dequeueRateLimiter = RateLimiter.create(DEFAULT_SUBMISSION_RATE_PER_SEC);
 
-    var workflowValidator = new ExtraWorkflowValidator(
+    var workflowValidator = new ExtendedWorkflowValidator(
         new BasicWorkflowValidator(new DockerImageValidator()), timeoutConfig.ttlOf(State.RUNNING), secretWhitelist);
 
     // These output handlers will be invoked in order.
