@@ -66,6 +66,7 @@ public class BasicWorkflowValidatorTest {
   private static final int MAX_SERVICE_ACCOUNT_LENGTH = 256;
   private static final int MAX_ENV_VARS = 128;
   private static final int MAX_ENV_SIZE = 16 * 1024;
+  private static final Duration MIN_RUNNING_TIMEOUT = Duration.ofMinutes(1);
 
   @Mock
   private DockerImageValidator dockerImageValidator;
@@ -164,6 +165,7 @@ public class BasicWorkflowValidatorTest {
         .add("invalid offset: Unable to parse offset period")
         .add(limit("too many env vars", env.size(), MAX_ENV_VARS))
         .add(limit("env too big", envSize, MAX_ENV_SIZE))
+        .add(limit("running timeout is too small", runningTimeout, MIN_RUNNING_TIMEOUT))
         .build();
 
     assertThat(errors, containsInAnyOrder(expectedErrors.toArray()));

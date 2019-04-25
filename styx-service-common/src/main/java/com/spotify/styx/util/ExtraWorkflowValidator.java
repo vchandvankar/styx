@@ -33,8 +33,6 @@ import java.util.Set;
  */
 public class ExtraWorkflowValidator implements WorkflowValidator {
 
-  private static final Duration MIN_RUNNING_TIMEOUT = Duration.ofMinutes(1);
-
   private final WorkflowValidator workflowValidator;
   private final Duration maxRunningTimeout;
   private final Set<String> secretWhitelist;
@@ -55,14 +53,11 @@ public class ExtraWorkflowValidator implements WorkflowValidator {
     var cfg = workflow.configuration();
 
     cfg.runningTimeout().ifPresent(timeout -> {
-      lowerLimit(e, timeout, MIN_RUNNING_TIMEOUT, "running timeout is too small");
-      if (maxRunningTimeout != null) {
-        upperLimit(e, timeout, maxRunningTimeout, "running timeout is too big");
-      }
+      upperLimit(e, timeout, maxRunningTimeout, "running timeout is too big");
     });
 
     cfg.secret().ifPresent(secret -> {
-      if (secretWhitelist != null && !secretWhitelist.contains(secret.name())) {
+      if (!secretWhitelist.contains(secret.name())) {
         e.add("secret " + secret.name() + " is not whitelisted");
       }
     });

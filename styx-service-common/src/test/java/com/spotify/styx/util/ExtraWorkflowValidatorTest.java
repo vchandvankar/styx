@@ -43,8 +43,6 @@ import org.mockito.junit.MockitoJUnitRunner;
 @RunWith(MockitoJUnitRunner.class)
 public class ExtraWorkflowValidatorTest {
 
-  private static final Duration MIN_RUNNING_TIMEOUT = Duration.ofMinutes(1);
-
   private static final Duration MAX_RUNNING_TIMEOUT = Duration.ofDays(1);
 
   @Mock private WorkflowValidator basicWorkflowValidator;
@@ -74,19 +72,6 @@ public class ExtraWorkflowValidatorTest {
 
     assertThat(errors,
         contains(limit("running timeout is too big", runningTimeout, MAX_RUNNING_TIMEOUT)));
-  }
-
-  @Test
-  public void shouldFailIfRunningTimeoutIsTooSmall() {
-    var runningTimeout = Duration.ofSeconds(1);
-
-    var errors = sut.validateWorkflow(
-        Workflow.create("test", WorkflowConfigurationBuilder.from(FULL_WORKFLOW_CONFIGURATION)
-            .runningTimeout(runningTimeout)
-            .build()));
-
-    assertThat(errors,
-        contains(limit("running timeout is too small", runningTimeout, MIN_RUNNING_TIMEOUT)));
   }
 
   @Test

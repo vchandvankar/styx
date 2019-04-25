@@ -23,6 +23,7 @@ package com.spotify.styx.util;
 import static java.lang.String.format;
 
 import com.spotify.styx.model.Workflow;
+import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -42,6 +43,7 @@ public class BasicWorkflowValidator implements WorkflowValidator {
   private static final int MAX_ENV_VARS = 128;
   private static final int MAX_ENV_SIZE = 16 * 1024;
 
+  private static final Duration MIN_RUNNING_TIMEOUT = Duration.ofMinutes(1);
   private final DockerImageValidator dockerImageValidator;
 
   public BasicWorkflowValidator(DockerImageValidator dockerImageValidator) {
@@ -116,6 +118,10 @@ public class BasicWorkflowValidator implements WorkflowValidator {
     } catch (IllegalArgumentException ex) {
       e.add("invalid schedule");
     }
+
+    cfg.runningTimeout().ifPresent(timeout -> {
+      lowerLimit(e, timeout, MIN_RUNNING_TIMEOUT, "running timeout is too small");
+    });
 
     return e;
   }
