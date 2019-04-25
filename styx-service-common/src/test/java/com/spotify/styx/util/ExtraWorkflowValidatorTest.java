@@ -43,8 +43,10 @@ import org.mockito.junit.MockitoJUnitRunner;
 @RunWith(MockitoJUnitRunner.class)
 public class ExtraWorkflowValidatorTest {
 
-  private static final Duration EXCESSIVE_TIMEOUT = Duration.ofDays(365);
-  
+  private static final Duration MIN_RUNNING_TIMEOUT = Duration.ofMinutes(1);
+
+  private static final Duration MAX_RUNNING_TIMEOUT = Duration.ofDays(1);
+
   @Mock private WorkflowValidator basicWorkflowValidator;
 
   private WorkflowValidator sut;
@@ -63,20 +65,33 @@ public class ExtraWorkflowValidatorTest {
 
   @Test
   public void shouldEnforceMaxRunningTimeoutLimitWhenSpecified() {
-    final Duration maxRunningTimeout = Duration.ofHours(24);
+    var runningTimeout = Duration.ofDays(365);
 
-    final List<String> errors = sut.validateWorkflow(
+    var errors = sut.validateWorkflow(
         Workflow.create("test", WorkflowConfigurationBuilder.from(FULL_WORKFLOW_CONFIGURATION)
-            .runningTimeout(EXCESSIVE_TIMEOUT)
+            .runningTimeout(runningTimeout)
             .build()));
 
     assertThat(errors,
-        contains("running timeout is too big: " + EXCESSIVE_TIMEOUT + ", limit = " + maxRunningTimeout));
+        contains(limit("running timeout is too big", runningTimeout, MAX_RUNNING_TIMEOUT)));
+  }
+
+  @Test
+  public void shouldFailIfRunningTimeoutIsTooSmall() {
+    var runningTimeout = Duration.ofSeconds(1);
+
+    var errors = sut.validateWorkflow(
+        Workflow.create("test", WorkflowConfigurationBuilder.from(FULL_WORKFLOW_CONFIGURATION)
+            .runningTimeout(runningTimeout)
+            .build()));
+
+    assertThat(errors,
+        contains(limit("running timeout is too small", runningTimeout, MIN_RUNNING_TIMEOUT)));
   }
 
   @Test
   public void shouldFailUsageOfNonWhitelistedSecret() {
-    final List<String> errors = sut.validateWorkflow(
+    var errors = sut.validateWorkflow(
         Workflow.create("test", WorkflowConfigurationBuilder.from(FULL_WORKFLOW_CONFIGURATION)
             .secret(WorkflowConfiguration.Secret.create("foo-secret", "/path"))
             .build()));
@@ -87,5 +102,9 @@ public class ExtraWorkflowValidatorTest {
   @Test(expected = IllegalArgumentException.class)
   public void shouldFailIfInvalidMaxRunningTimeout() {
     new ExtraWorkflowValidator(basicWorkflowValidator, Duration.ofDays(-1), Set.of());
+  }
+
+  private String limit(String msg, Object value, Object limit) {
+    return msg + ": " + value + ", limit = " + limit;
   }
 }

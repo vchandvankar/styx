@@ -110,8 +110,8 @@ public class BasicWorkflowValidatorTest {
     assertThat(errors, hasSize(1));
     assertThat(errors.get(0), startsWith("invalid offset"));
   }
-
   @Test
+
   public void validateInvalidDockerImage() {
     when(dockerImageValidator.validateImageReference(anyString())).thenReturn(List.of("foo", "bar"));
     final List<String> errors = sut.validateWorkflow(Workflow.create("test", FULL_WORKFLOW_CONFIGURATION));
