@@ -35,22 +35,23 @@ import java.util.Set;
  */
 public class ExtendedWorkflowValidator implements WorkflowValidator {
 
-  private final WorkflowValidator workflowValidator;
+  private final WorkflowValidator delegate;
   private final Duration maxRunningTimeout;
   private final Set<String> secretWhitelist;
 
-  public ExtendedWorkflowValidator(WorkflowValidator workflowValidator, Duration maxRunningTimeout,
+  public ExtendedWorkflowValidator(WorkflowValidator delegate,
+                                   Duration maxRunningTimeout,
                                    Set<String> secretWhitelist) {
     Preconditions.checkArgument(maxRunningTimeout != null && !maxRunningTimeout.isNegative(),
         "Max Running timeout should be positive");
-    this.workflowValidator = Objects.requireNonNull(workflowValidator);
+    this.delegate = Objects.requireNonNull(delegate);
     this.maxRunningTimeout = maxRunningTimeout;
     this.secretWhitelist = Objects.requireNonNull(secretWhitelist);
   }
 
   @Override
   public List<String> validateWorkflow(Workflow workflow) {
-    var e = new ArrayList<>(workflowValidator.validateWorkflow(workflow));
+    var e = new ArrayList<>(delegate.validateWorkflow(workflow));
 
     var cfg = workflow.configuration();
 
