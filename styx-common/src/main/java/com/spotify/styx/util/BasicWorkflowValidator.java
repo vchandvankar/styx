@@ -48,6 +48,7 @@ public class BasicWorkflowValidator implements WorkflowValidator {
     this.dockerImageValidator = Objects.requireNonNull(dockerImageValidator);
   }
 
+  @Override
   public List<String> validateWorkflow(Workflow workflow) {
     var workflowId = workflow.id();
     var cfg = workflow.configuration();

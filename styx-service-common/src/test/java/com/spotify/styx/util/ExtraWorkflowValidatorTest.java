@@ -52,7 +52,7 @@ public class ExtraWorkflowValidatorTest {
   @Before
   public void setUp() throws Exception {
     when(basicWorkflowValidator.validateWorkflow(any())).thenReturn(List.of());
-    sut = new ExtraWorkflowValidator(basicWorkflowValidator, Duration.ofHours(24),
+    sut = new ExtraWorkflowValidator(basicWorkflowValidator, Duration.ofDays(1),
         Set.of(FULL_WORKFLOW_CONFIGURATION.secret().get().name()));
   }
 
@@ -70,7 +70,8 @@ public class ExtraWorkflowValidatorTest {
             .runningTimeout(EXCESSIVE_TIMEOUT)
             .build()));
 
-    assertThat(errors, contains(limit("running timeout is too big", EXCESSIVE_TIMEOUT, maxRunningTimeout)));
+    assertThat(errors,
+        contains("running timeout is too big: " + EXCESSIVE_TIMEOUT + ", limit = " + maxRunningTimeout));
   }
 
   @Test
@@ -83,7 +84,8 @@ public class ExtraWorkflowValidatorTest {
     assertThat(errors, contains("secret foo-secret is not whitelisted"));
   }
 
-  private String limit(String msg, Object value, Object limit) {
-    return msg + ": " + value + ", limit = " + limit;
+  @Test(expected = IllegalArgumentException.class)
+  public void shouldFailIfInvalidMaxRunningTimeout() {
+    new ExtraWorkflowValidator(basicWorkflowValidator, Duration.ofDays(-1), Set.of());
   }
 }

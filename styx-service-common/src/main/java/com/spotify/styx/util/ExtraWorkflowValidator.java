@@ -48,6 +48,7 @@ public class ExtraWorkflowValidator implements WorkflowValidator {
     this.secretWhitelist = Objects.requireNonNull(secretWhitelist);
   }
 
+  @Override
   public List<String> validateWorkflow(Workflow workflow) {
     var e = new ArrayList<>(workflowValidator.validateWorkflow(workflow));
 
